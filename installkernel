@@ -1,0 +1,82 @@
+#!/bin/sh
+#
+# KireinaHoro <i@jsteward.moe>
+#
+# Install the kernel on a Portage-powered Android system.
+#
+# This script is called from /usr/src/linux/arch/arm64/boot/install.sh.
+# If you install it as /bin/kernel, you can do a "make install"
+# from a generic kernel source tree, and this script will generate the
+# boot.img properly and flash it to the correct partition.
+
+set -e
+
+if [ $# -eq 3 ] || [ $# -eq 4 ] || [ $# -eq 5 ] ; then
+	img="$2"
+	map="$3"
+	ver="$1"
+	if [ $# -ge 4 ] && [ -n "$4" ] ; then
+		dir="$4"
+	else
+		dir="/boot"
+	fi
+else
+	echo "Usage: installkernel <version> <image> <System.map> <directory>"
+	exit 1
+fi
+
+updatever () {
+	if [ -f "$dir/$1-$ver" ] ; then
+		mv "$dir/$1-$ver" "$dir/$1-$ver.old"
+	fi
+
+	cat "$2" > "$dir/$1-$ver"
+}
+
+if [ "$(basename $img)" = "vmlinux" ] ; then
+	img_dest=vmlinux
+else
+	img_dest=vmlinuz
+fi
+updatever $img_dest "$img"
+updatever System.map "$map"
+
+config=$(dirnmame "$map")
+config="${config}/.config"
+if [ -f "$config" ] ; then
+	updatever config "$config"
+fi
+
+# repack the initramfs
+preinit_dir="/usr/lib/preinit/current"
+if [ -d "$preinit_dir" ] ; then
+	echo "Preinit for this device isn't selected; use eselect to configure" >&2
+	exit 1
+fi
+
+rootdir="$preinit_dir/initramfs"
+cd $preinit_dir && make install
+tmpwork="/tmp/android-kernel"
+mkdir -p $tmpwork
+ramdisk_out="$tmpwork/ramdisk"
+bootimg_out="$tmpwork/boot.img"
+bootimg_cfg="$preinit_dir/bootimg.cfg"
+cd $rootdir && \
+	find . | cpio --create --format='newc' | gzip > $ramdisk_out
+abootimg --create $bootimg_out -f $bootimg_cfg -k $img -r $ramdisk_out
+
+updatever boot.img "$bootimg_out"
+
+# flash the initramfs
+target_blkdev="$(blkid | sed -E -n 's/^(.*): PARTLABEL="boot".*$/\1/p')"
+dd if="$bootimg_out" of="$target_blkdev"
+
+rm -rf $tmpwork
+
+if [ "$dir" = "/boot" ] ; then
+	PATH="$PATH:/usr/sbin:/sbin" \
+		run-parts --verbose --exit-on-error --arg="$ver" --arg="$dir/$img_dest-$ver" \
+		/etc/kernel/postinst.d
+fi
+
+exit 0
