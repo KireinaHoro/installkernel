@@ -33,15 +33,17 @@ updatever () {
 	cat "$2" > "$dir/$1-$ver"
 }
 
+img="$(echo $img | sed -E 's/Image/Image.gz-dtb/')"
 if [ "$(basename $img)" = "vmlinux" ] ; then
 	img_dest=vmlinux
 else
 	img_dest=vmlinuz
 fi
+
 updatever $img_dest "$img"
 updatever System.map "$map"
 
-config=$(dirnmame "$map")
+config=$(dirname "$map")
 config="${config}/.config"
 if [ -f "$config" ] ; then
 	updatever config "$config"
@@ -49,26 +51,29 @@ fi
 
 # repack the initramfs
 preinit_dir="/usr/lib/preinit/current"
-if [ -d "$preinit_dir" ] ; then
+if [ ! -d "$preinit_dir" ] ; then
 	echo "Preinit for this device isn't selected; use eselect to configure" >&2
 	exit 1
 fi
 
 rootdir="$preinit_dir/initramfs"
-cd $preinit_dir && make install
+pushd $preinit_dir && make
+popd
 tmpwork="/tmp/android-kernel"
 mkdir -p $tmpwork
 ramdisk_out="$tmpwork/ramdisk"
 bootimg_out="$tmpwork/boot.img"
 bootimg_cfg="$preinit_dir/bootimg.cfg"
-cd $rootdir && \
+pushd $rootdir && \
 	find . | cpio --create --format='newc' | gzip > $ramdisk_out
+popd
 abootimg --create $bootimg_out -f $bootimg_cfg -k $img -r $ramdisk_out
 
 updatever boot.img "$bootimg_out"
 
 # flash the initramfs
 target_blkdev="$(blkid | sed -E -n 's/^(.*): PARTLABEL="boot".*$/\1/p')"
+echo "Flashing new boot.img to $target_blkdev..."
 dd if="$bootimg_out" of="$target_blkdev"
 
 rm -rf $tmpwork
